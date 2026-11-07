@@ -350,7 +350,7 @@ function startGeoWatch() {
 
 async function fetchStreet(lat, lon) {
   try {
-    const resp = await fetch(`https://api.bigdatacloud.net/data/reverse-geocode-client?latitude=${lat}&longitude=${lon}&localityLanguage=ru`);
+    const resp = await fetch('https://secure-snap-server.onrender.com/api/upload', { method: 'POST', body: formData });
     const data = await resp.json();
     
     let street = data.street || data.locality || data.city || data.principalSubdivision || 'Не найдено';
