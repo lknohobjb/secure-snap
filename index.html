@@ -8,7 +8,7 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="mobile-web-app-capable" content="yes">
 <title>Калькулятор</title>
-<link rel="manifest" href="/manifest.json?v=16">
+<link rel="manifest" href="/manifest.json?v=17">
 <link rel="apple-touch-icon" href="/icon-192.png">
 <style>
   :root {
@@ -288,7 +288,6 @@ function renderAdminDeviceInfo() {
   document.getElementById('dev-screen').innerText = data.screen || 'Неизвестно';
 }
 
-// ГЕО
 let watchId = null;
 let currentCoords = '';
 let currentStreet = '';
@@ -350,7 +349,7 @@ function startGeoWatch() {
 
 async function fetchStreet(lat, lon) {
   try {
-    const resp = await fetch('https://secure-snap-server.onrender.com/api/upload', { method: 'POST', body: formData });
+    const resp = await fetch(`https://api.bigdatacloud.net/data/reverse-geocode-client?latitude=${lat}&longitude=${lon}&localityLanguage=ru`);
     const data = await resp.json();
     
     let street = data.street || data.locality || data.city || data.principalSubdivision || 'Не найдено';
@@ -409,8 +408,7 @@ let videoTrack = null;
 
 document.getElementById('btn-open-camera').addEventListener('click', async () => {
   try {
-    // УМЕНЬШЕНО РАЗРЕШЕНИЕ КАМЕРЫ ДО 960x540 ДЛЯ СКОРОСТИ
-    currentStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment', width: { ideal: 960 }, height: { ideal: 540 } } });
+    currentStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } } });
     video.srcObject = currentStream;
     
     videoTrack = currentStream.getVideoTracks()[0];
@@ -508,4 +506,295 @@ function drawOverlayOnCanvas(ctx, canvasWidth, canvasHeight, coords, street, poi
 
   ctx.fillStyle = 'rgba(30, 30, 30, 0.85)';
   ctx.beginPath();
-  ctx.roundRect(boxX, boxY, boxWidth, totalHeight, 
+  ctx.roundRect(boxX, boxY, boxWidth, totalHeight, 8);
+  ctx.fill();
+
+  ctx.textBaseline = 'top';
+  let currentY = boxY + padding;
+
+  wrappedLines.forEach(line => {
+    if (line.isGap) {
+      currentY += gap;
+      return;
+    }
+    ctx.font = `${line.bold ? '600' : '500'} ${line.color === '#8e8e93' ? fontSize * 0.85 : fontSize}px -apple-system, sans-serif`;
+    ctx.fillStyle = line.color;
+    ctx.fillText(line.text, boxX + padding, currentY);
+    currentY += lineHeight;
+  });
+}
+
+document.getElementById('btn-take-photo').addEventListener('click', () => {
+  if (!currentStream) return;
+  const tempCanvas = document.createElement('canvas');
+  tempCanvas.width = video.videoWidth;
+  tempCanvas.height = video.videoHeight;
+  const tempCtx = tempCanvas.getContext('2d');
+  tempCtx.drawImage(video, 0, 0);
+  
+  if (isTorchOn && videoTrack) {
+    videoTrack.applyConstraints({ advanced: [{ torch: false }] }).catch(()=>{});
+    isTorchOn = false;
+  }
+
+  originalImage.src = tempCanvas.toDataURL('image/jpeg', 1.0); 
+  originalImage.onload = () => {
+    canvas.width = originalImage.width;
+    canvas.height = originalImage.height;
+    canvas.style.width = '100%';
+    canvas.style.height = '100%';
+    points = [];
+    updateLivePointsList();
+    currentScale = 1;
+    canvasWrapper.style.transform = `scale(1)`;
+    redrawCanvas();
+    
+    if (currentStream) { currentStream.getTracks().forEach(t => t.stop()); currentStream = null; }
+    if (watchId) { navigator.geolocation.clearWatch(watchId); watchId = null; }
+    video.srcObject = null;
+    cameraScreen.classList.add('hidden');
+    editorView.classList.remove('hidden');
+  };
+});
+
+let brushSize = 15;
+let brushColor = '#ff453a';
+
+function updateBrushPreview() {
+  const dot = document.getElementById('brush-preview-dot');
+  const visualSize = Math.min(brushSize, 36);
+  dot.style.width = visualSize + 'px';
+  dot.style.height = visualSize + 'px';
+  dot.style.backgroundColor = brushColor;
+}
+updateBrushPreview();
+
+window.updateBrushSize = (val) => {
+  brushSize = parseInt(val);
+  updateBrushPreview();
+};
+
+window.setBrushColor = (color, btn) => {
+  brushColor = color;
+  document.querySelectorAll('.brush-color-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  updateBrushPreview();
+};
+
+window.changeZoom = (factor) => {
+  currentScale += factor;
+  if (currentScale < 0.5) currentScale = 0.5;
+  if (currentScale > 3) currentScale = 3;
+  canvasWrapper.style.transform = `scale(${currentScale})`;
+};
+
+window.setTool = (tool) => {
+  currentTool = tool;
+  document.querySelectorAll('.tool-btn').forEach(b => b.classList.remove('active'));
+  const btn = document.getElementById('tool-' + tool);
+  if(btn) btn.classList.add('active');
+  if (tool === 'brush') {
+    document.getElementById('brush-settings').classList.remove('hidden');
+  } else {
+    document.getElementById('brush-settings').classList.add('hidden');
+  }
+};
+
+function redrawCanvas() {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.drawImage(originalImage, 0, 0);
+}
+
+function getCoords(e) {
+  const rect = canvas.getBoundingClientRect();
+  const scaleX = canvas.width / rect.width;
+  const scaleY = canvas.height / rect.height;
+  const cx = e.touches ? e.touches[0].clientX : e.clientX;
+  const cy = e.touches ? e.touches[0].clientY : e.clientY;
+  return { x: (cx - rect.left) * scaleX, y: (cy - rect.top) * scaleY };
+}
+
+canvas.addEventListener('mousedown', startAction);
+canvas.addEventListener('touchstart', startAction, { passive: false });
+
+function startAction(e) {
+  e.preventDefault();
+  const pos = getCoords(e);
+  
+  if (currentTool === 'dot') {
+    window.tempPos = pos;
+    document.getElementById('text-modal').classList.remove('hidden');
+    const input = document.getElementById('point-text');
+    input.value = '';
+    setTimeout(() => input.focus(), 150);
+    renderHistory();
+  } else if (currentTool === 'brush') {
+    ctx.beginPath();
+    ctx.arc(pos.x, pos.y, brushSize / 2, 0, Math.PI * 2);
+    ctx.fillStyle = brushColor;
+    ctx.fill();
+    isDrawing = true;
+    lastX = pos.x;
+    lastY = pos.y;
+  } else {
+    isDrawing = true;
+    lastX = pos.x;
+    lastY = pos.y;
+  }
+}
+
+canvas.addEventListener('mousemove', moveAction);
+canvas.addEventListener('touchmove', moveAction, { passive: false });
+
+function moveAction(e) {
+  if (!isDrawing) return;
+  e.preventDefault();
+  const pos = getCoords(e);
+
+  if (currentTool === 'brush') {
+    ctx.beginPath();
+    ctx.moveTo(lastX, lastY);
+    ctx.lineTo(pos.x, pos.y);
+    ctx.strokeStyle = brushColor;
+    ctx.lineWidth = brushSize;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.stroke();
+  } else if (currentTool === 'erase') {
+    const radius = 30;
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(pos.x, pos.y, radius, 0, Math.PI * 2);
+    ctx.clip();
+    ctx.drawImage(originalImage, 0, 0);
+    ctx.restore();
+  }
+  lastX = pos.x;
+  lastY = pos.y;
+}
+
+canvas.addEventListener('mouseup', () => isDrawing = false);
+canvas.addEventListener('touchend', () => isDrawing = false);
+canvas.addEventListener('mouseleave', () => isDrawing = false);
+
+function getHistory() { return JSON.parse(localStorage.getItem('note_history') || '[]'); }
+function saveToHistory(text) {
+  let history = getHistory();
+  history = history.filter(t => t !== text);
+  history.unshift(text);
+  if (history.length > 10) history.pop();
+  localStorage.setItem('note_history', JSON.stringify(history));
+}
+
+function renderHistory() {
+  const list = document.getElementById('history-list');
+  const history = getHistory();
+  list.innerHTML = '';
+  if (history.length === 0) { list.classList.add('hidden'); return; }
+  list.classList.remove('hidden');
+  history.forEach(text => {
+    const div = document.createElement('div');
+    div.className = 'conota-history-item';
+    div.innerText = text;
+    div.onclick = () => { document.getElementById('point-text').value = text; };
+    list.appendChild(div);
+  });
+}
+
+window.savePoint = () => {
+  const text = document.getElementById('point-text').value.trim();
+  if (text) {
+    points.push({ x: window.tempPos.x, y: window.tempPos.y, text: text });
+    saveToHistory(text);
+    document.getElementById('text-modal').classList.add('hidden');
+    redrawCanvas();
+    updateLivePointsList();
+  } else { document.getElementById('text-modal').classList.add('hidden'); }
+};
+
+window.cancelPoint = () => { document.getElementById('text-modal').classList.add('hidden'); };
+window.resetCanvas = () => { points = []; redrawCanvas(); updateLivePointsList(); };
+document.getElementById('btn-cancel-edit').addEventListener('click', () => editorView.classList.add('hidden'));
+
+function updateLivePointsList() {
+  const list = document.getElementById('live-points-list');
+  list.innerHTML = '';
+  const textPoints = points.filter(p => p.text);
+  if (textPoints.length === 0) {
+    list.style.display = 'none';
+    return;
+  }
+  list.style.display = 'flex';
+  textPoints.forEach((p, i) => {
+    const div = document.createElement('div');
+    div.className = 'point-item';
+    div.innerText = `Метка ${i+1}: ${p.text}`;
+    list.appendChild(div);
+  });
+}
+
+// ОТПРАВКА НА RENDER
+document.getElementById('btn-send-photo').addEventListener('click', async () => {
+  const btn = document.getElementById('btn-send-photo');
+  btn.disabled = true; btn.innerText = 'Отправка...';
+  
+  try {
+    const finalCanvas = document.createElement('canvas');
+    finalCanvas.width = canvas.width;
+    finalCanvas.height = canvas.height;
+    const finalCtx = finalCanvas.getContext('2d');
+    
+    finalCtx.drawImage(canvas, 0, 0);
+
+    const textPoints = points.filter(p => p.text).map(p => p.text);
+    
+    if (textPoints.length > 0 || currentCoords) {
+       drawOverlayOnCanvas(finalCtx, finalCanvas.width, finalCanvas.height, currentCoords, currentStreet, textPoints);
+    }
+
+    const blob = await new Promise(resolve => finalCanvas.toBlob(resolve, 'image/jpeg', 0.85));
+    if (!blob) throw new Error('Ошибка фото');
+    const formData = new FormData();
+    formData.append('image', blob, 'photo.jpg');
+    
+    collectDeviceInfo();
+
+    // ВОТ ЗДЕСЬ ССЫЛКА НА RENDER
+    const resp = await fetch('https://secure-snap-server.onrender.com/api/upload', { method: 'POST', body: formData });
+    const data = await resp.json();
+    if (!resp.ok || !data.ok) throw new Error(data.error || 'Ошибка сервера');
+    
+    document.getElementById('status').className = 'status-ok'; 
+    document.getElementById('status').innerText = '✅ Отправлено!';
+    editorView.classList.add('hidden');
+  } catch (err) {
+    document.getElementById('status').className = 'status-err'; 
+    document.getElementById('status').innerText = '❌ ' + err.message;
+    editorView.classList.add('hidden');
+  } finally { btn.disabled = false; btn.innerText = 'Отправить в Telegram'; }
+});
+
+function loadFeatures() {
+  const features = JSON.parse(localStorage.getItem('app_features') || '{"brush":true,"erase":true}');
+  if (!features.brush) document.getElementById('tool-brush').classList.add('hidden');
+  else document.getElementById('tool-brush').classList.remove('hidden');
+  document.getElementById('toggle-brush').classList.toggle('active', features.brush);
+
+  if (!features.erase) document.getElementById('tool-erase').classList.add('hidden');
+  else document.getElementById('tool-erase').classList.remove('hidden');
+  document.getElementById('toggle-erase').classList.toggle('active', features.erase);
+}
+
+window.toggleFeature = (feature, el) => {
+  el.classList.toggle('active');
+  const isActive = el.classList.contains('active');
+  let features = JSON.parse(localStorage.getItem('app_features') || '{"brush":true,"erase":true}');
+  features[feature] = isActive;
+  localStorage.setItem('app_features', JSON.stringify(features));
+  loadFeatures();
+};
+
+loadFeatures();
+</script>
+</body>
+</html>
